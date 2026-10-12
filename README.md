@@ -27,6 +27,33 @@
 
 ## 노트가 틀린 곳
 
+### notes/2404.05228.md ↔ .cache/2404.05228.txt
+
+**틀린 곳 하나: 핵심 주장 3 — "사용자는 AI 지도를 맹목적으로 수용하거나 거부하지 않고"**
+
+노트는 이를 무제한 명제로 썼으나 원문은 그렇지 않다.
+
+- **원문 절 5.4.1**(`Participants who accepted the guidance`)의 첫 문장:
+  "The fair machine guidance group included **a few participants who simply followed** the
+  AI-based guidance and stated that they did this because 'it was the AI's decision' or
+  because they were unsure of their own decisions."
+  → 맹목적으로 수용한 사람이 실제로 있었다. 노트가 근거로 든 **5.4.1절이 오히려 이 예외를
+  적시한다.**
+- 같은 절의 서술에 따르면 49명 중 사유를 검토한 뒤 수용한 사람은 **21 of 49**,
+  의심하면서 수용한 사람은 **13 of 49**였다. 즉 "검토 후 판단"도 다수가 아니라 일부였다.
+- 원문 **절 1(기여)** 은 같은 사실을 정확히 다르게 표현한다: "**most** participants did not
+  blindly accept the guidance from the system and instead they evaluated the information
+  provided before deciding whether to adapt" — "**대부분**", not 전부.
+
+**정정**: "대부분의 사용자는 맹목적으로 수용하거나 거부하지 않고 제시된 정보를 검토한 뒤
+판단했다"가 원문과 맞다. 다만 이어지는 "의심하면서 따르는 태도는 fair machine guidance
+그룹에서만"은 절 5.4.1의 "The phenomenon of questioning but obeying was unique to the fair
+machine guidance group"과 일치하므로 그대로 둔다.
+
+수치 자체는 전부 일치했다(99·459·0.03·37/39/13/10·300·20×5·100·0.47 vs 0.23·p<0.05 등).
+
+### notes/2509.04404.md ↔ .cache/2509.04404.txt
+
 대조 대상: `notes/2509.04404.md` ↔ `.cache/2509.04404.txt` (원문 1,304줄 전체).
 
 **결과: 원문에 없거나 값이 다른 수치는 없다.** 노트에 등장하는 수치 토큰을 전부 원문과
