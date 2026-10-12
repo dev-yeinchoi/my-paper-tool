@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""paper <arXiv 번호 | URL | 파일.pdf> — 논문을 텍스트로 옮겨 notes/ 에 노트를 만든다."""
+import html.parser
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+CACHE = ROOT / ".cache"
+NOTES = ROOT / "notes"
+PROMPT = ROOT / "prompt.md"
+MAX_CHARS = 120000
+MIN_CHARS = 200
+DEADLINE = 290  # 초 — 처음부터 5분 안에 끝나도록
+START = time.monotonic()
+
+SECTIONS = ["## 요약", "## 핵심 주장", "## 실험 설정", "## 발표 때 받을 만한 질문"]
+
+
+def fail(message: str):
+    print(message)
+    sys.exit(1)
+
+
+class TextExtractor(html.parser.HTMLParser):
+    """HTML 본문을 텍스트로 옮긴다 (표준 라이브러리만)."""
+
+    SKIP = {"script", "style", "noscript", "svg", "head", "nav", "footer"}
+    BREAK = {
+        "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "table", "thead", "tbody", "article",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.article = []
+        self.article_depth = 0
+        self.skip_depth = 0
+        self.math_depth = 0
+
+    def emit(self, piece: str):
+        self.parts.append(piece)
+        if self.article_depth:
+            self.article.append(piece)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip_depth += 1
+        elif tag == "article":
+            self.article_depth += 1
+        elif tag == "math":
+            self.math_depth += 1
+            for key, value in attrs:
+                if key == "alttext" and value:
+                    self.emit(value)
+        elif tag in self.BREAK:
+            self.emit("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP:
+            if self.skip_depth:
+                self.skip_depth -= 1
+        elif tag == "article":
+            if self.article_depth:
+                self.article_depth -= 1
+        elif tag == "math":
+            if self.math_depth:
+                self.math_depth -= 1
+        elif tag in self.BREAK:
+            self.emit("\n")
+
+    def handle_data(self, data):
+        if not self.skip_depth and not self.math_depth:
+            self.emit(data)
+
+
+def html_to_text(raw: bytes) -> str:
+    extractor = TextExtractor()
+    try:
+        extractor.feed(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return ""
+    body = extractor.article if extractor.article else extractor.parts
+    return tidy(body)
+
+
+def tidy(parts) -> str:
+    text = "".join(parts).replace("\xa0", " ")
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"[ \t]+", " ", line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def clean_text(text: str) -> str:
+    text = tidy([text])
+    if len(text) > MAX_CHARS:
+        text = text[:MAX_CHARS]
+    return text
+
+
+def fetch(url: str, dest: Path) -> bool:
+    cmd = ["curl", "-fsSL", "--max-time", "60", "-A", "Mozilla/5.0 (paper-tool)",
+           "-o", str(dest), url]
+    try:
+        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=90)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0 and dest.exists() and dest.stat().st_size > 0
+
+
+def text_from_arxiv(arxiv_id: str) -> Path:
+    """arXiv 본문을 .cache/<id>.txt 로 만든다. HTML 이 없으면 PDF 로 다시 시도한다."""
+    html_path = CACHE / f"{arxiv_id}.html"
+    pdf_path = CACHE / f"{arxiv_id}.pdf"
+    fetched = False
+
+    if fetch(f"https://arxiv.org/html/{arxiv_id}", html_path):
+        fetched = True
+        text = clean_text(html_to_text(html_path.read_bytes()))
+        if len(text) >= MIN_CHARS:
+            out = CACHE / f"{arxiv_id}.txt"
+            out.write_text(text + "\n", encoding="utf-8")
+            return out
+
+    if fetch(f"https://arxiv.org/pdf/{arxiv_id}", pdf_path):
+        fetched = True
+        out = CACHE / f"{arxiv_id}.txt"
+        if pdftotext(pdf_path, out):
+            text = clean_text(out.read_text(encoding="utf-8", errors="replace"))
+            if len(text) >= MIN_CHARS:
+                out.write_text(text + "\n", encoding="utf-8")
+                return out
+
+    if fetched:
+        fail("텍스트가 없습니다")
+    fail("본문을 가져오지 못했습니다 — 네트워크나 arXiv 주소를 확인해 주세요")
+
+
+def pdftotext(pdf: Path, dest: Path) -> bool:
+    try:
+        result = subprocess.run(["pdftotext", str(pdf), str(dest)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0 and dest.exists()
+
+
+def text_from_pdf(pdf: Path) -> Path:
+    out = CACHE / f"{pdf.stem}.txt"
+    if not pdftotext(pdf, out):
+        fail("PDF 를 텍스트로 바꾸지 못했습니다")
+    text = clean_text(out.read_text(encoding="utf-8", errors="replace"))
+    if len(text) < MIN_CHARS:
+        out.write_text("", encoding="utf-8")
+        fail("텍스트가 없습니다")
+    out.write_text(text + "\n", encoding="utf-8")
+    return out
+
+
+def parse_source(arg: str):
+    """(모드, arXiv id | PDF 경로, 노트 이름)"""
+    path = Path(os.path.expanduser(arg))
+    if arg.lower().endswith(".pdf") or (path.exists() and path.is_file() and path.suffix.lower() == ".pdf"):
+        if not path.is_file():
+            fail(f"파일을 찾을 수 없습니다: {arg}")
+        if not os.access(path, os.R_OK):
+            fail(f"파일을 읽을 수 없습니다: {arg}")
+        return ("pdf", path, path.stem)
+    match = re.search(r"(\d{4}\.\d{4,5})(?:v(\d+))?", arg)
+    if not match:
+        fail("사용법: ./paper <arXiv 번호 | URL | 파일.pdf>")
+    return ("arxiv", match.group(1), match.group(1))
+
+
+def run_model(text_file: Path) -> str:
+    prompt = PROMPT.read_text(encoding="utf-8")
+    cmd = ["opencode", "run", prompt, "-f", str(text_file)]
+    remaining = DEADLINE - (time.monotonic() - START)
+    if remaining < 5:
+        fail("5분 시간 초과 — opencode run --print-logs 로 원인을 보세요")
+    try:
+        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, cwd=str(ROOT),
+                                timeout=remaining)
+    except subprocess.TimeoutExpired:
+        fail("모델 응답이 5분 안에 끝나지 않았습니다 — opencode run --print-logs 로 원인을 보세요")
+    except OSError:
+        fail("opencode run 을 실행하지 못했습니다 — opencode run --print-logs 로 원인을 보세요")
+    output = result.stdout.decode("utf-8", errors="replace")
+    (CACHE / f"{text_file.stem}.out.txt").write_text(
+        output + ("\n--- stderr ---\n" + result.stderr.decode("utf-8", errors="replace") if result.stderr else ""),
+        encoding="utf-8")
+    return strip_fences(output).strip()
+
+
+def strip_fences(text: str) -> str:
+    lines = text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def main():
+    if len(sys.argv) < 2 or not sys.argv[1].strip():
+        fail("사용법: ./paper <arXiv 번호 | URL | 파일.pdf>")
+    CACHE.mkdir(parents=True, exist_ok=True)
+    mode, source, note_name = parse_source(sys.argv[1].strip())
+
+    if mode == "arxiv":
+        text_file = text_from_arxiv(source)
+    else:
+        text_file = text_from_pdf(source)
+
+    if not text_file.exists() or len(clean_text(text_file.read_text(encoding="utf-8", errors="replace"))) < MIN_CHARS:
+        fail("텍스트가 없습니다")
+
+    note = run_model(text_file)
+    if not note:
+        fail("모델 응답이 비었습니다 — opencode run --print-logs 로 원인을 보세요")
+    missing = [s for s in SECTIONS if s not in note]
+    if missing:
+        fail("노트에 네 절이 완전하지 않습니다 — opencode run --print-logs 로 원인을 보세요")
+
+    NOTES.mkdir(parents=True, exist_ok=True)
+    note_path = NOTES / f"{note_name}.md"
+    if not note.endswith("\n"):
+        note += "\n"
+    note_path.write_text(note, encoding="utf-8")
+    print(f"{note_path.relative_to(ROOT)} ({len(note.splitlines())}줄)")
+
+
+if __name__ == "__main__":
+    main()

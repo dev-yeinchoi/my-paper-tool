@@ -1,0 +1,3 @@
+.cache/
+# 실제(미공개·IRB) 데이터는 이 저장소에 넣지 않는다
+data/private/
